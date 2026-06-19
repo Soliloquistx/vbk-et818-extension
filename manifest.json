@@ -1,0 +1,40 @@
+{
+  "manifest_version": 3,
+  "name": "VBK → ET818 填表助手",
+  "description": "从 VBK 订单详情页抓取数据，一键填入 ET818 散客拼团表单",
+  "version": "1.0.0",
+  "author": "飞鱼",
+  "permissions": [
+    "storage",
+    "activeTab"
+  ],
+  "host_permissions": [
+    "https://vbooking.ctrip.com/*",
+    "https://t16.et818.com/*"
+  ],
+  "action": {
+    "default_title": "VBK → ET818 填表助手"
+  },
+  "background": {
+    "service_worker": "background.js"
+  },
+  "content_scripts": [
+    {
+      "matches": ["https://vbooking.ctrip.com/order/*"],
+      "js": ["lib/parser.js", "content/vbk-scraper.js"],
+      "css": ["content/shared.css"],
+      "run_at": "document_idle"
+    },
+    {
+      "matches": ["https://t16.et818.com/XWJ/*"],
+      "js": ["lib/parser.js", "content/et818-filler.js"],
+      "css": ["content/shared.css"],
+      "run_at": "document_idle"
+    }
+  ],
+  "icons": {
+    "16": "icons/icon16.png",
+    "48": "icons/icon48.png",
+    "128": "icons/icon128.png"
+  }
+}
