@@ -18,6 +18,17 @@
   const STORAGE_KEY = 'vbk_orders';
   let currentOrder = null;
   let panel = null;
+  window.__vbkErrors = window.__vbkErrors || [];
+  if (!window.__vbkErrorHooked) {
+    window.__vbkErrorHooked = true;
+    window.addEventListener('error', (event) => {
+      window.__vbkErrors.push({ type: 'error', message: event.message, stack: event.error?.stack || '', when: Date.now() });
+    });
+    window.addEventListener('unhandledrejection', (event) => {
+      const reason = event.reason;
+      window.__vbkErrors.push({ type: 'unhandledrejection', message: reason?.message || String(reason), stack: reason?.stack || '', when: Date.now() });
+    });
+  }
 
   // ── 初始化 ────────────────────────────────────────────────────
 
@@ -125,7 +136,7 @@
       ${travellerDetails ? `<div class="vbk-summary-row" style="font-size:11px;color:#888;"><span class="vk">详情</span><span class="vv">${travellerDetails}</span></div>` : ''}
       <div class="vbk-summary-row"><span class="vk">航班</span><span class="vv">${flightInfo}</span></div>
       ${pickupCount > 0 ? `<div class="vbk-summary-row"><span class="vk">接送</span><span class="vv">${pickupCount} 段</span></div>` : ''}
-      ${o.room_info ? `<div class="vbk-summary-row"><span class="vk">用房</span><span class="vv">${o.room_info.star_rating || ''} ${o.room_info.biao > 0 ? o.room_info.biao + '标间' : ''} ${o.room_info.dachuang > 0 ? o.room_info.dachuang + '大床' : ''}</span></div>` : ''}
+      ${o.room_info ? `<div class="vbk-summary-row"><span class="vk">用房</span><span class="vv">${o.room_info.star_rating || ''} ${o.room_info.biao > 0 ? o.room_info.biao + '标间' : ''} ${o.room_info.dachuang > 0 ? o.room_info.dachuang + '大床' : ''}${o.room_info.single_room_diff_needed ? ' ｜核对单房差' : ''}</span></div>` : ''}
       ${o.merchant_note ? `<div class="vbk-summary-row"><span class="vk">备注</span><span class="vv">${o.merchant_note.substring(0, 30)}</span></div>` : ''}
       ${o.total_amount ? `<div class="vbk-summary-row"><span class="vk">总计</span><span class="vv">¥${o.total_amount}</span></div>` : ''}
       ${o.encrypted_hidden ? '<div class="vbk-summary-warn">⚠️ 加密未解密</div>' : ''}
@@ -151,9 +162,14 @@
     });
 
     // 一键填表
-    document.getElementById('vbk-fill-all')?.addEventListener('click', () => {
+    document.getElementById('vbk-fill-all')?.addEventListener('click', async () => {
       if (!currentOrder) return log('❌ 没有可用订单数据');
-      fillAll(currentOrder);
+      try {
+        await fillAll(currentOrder);
+      } catch (error) {
+        console.error('[ET818 Filler] fillAll failed:', error);
+        log(`❌ 填表异常: ${error.message}`);
+      }
     });
 
     // 仅填客人
@@ -269,13 +285,22 @@
 
   // ── 字段定位（label → 右侧 value cell） ──────────────────────
 
+  function normalizeLabelText(text) {
+    return (text || '').trim().replace(/[\s：:*＊]/g, '');
+  }
+
   function findFieldCell(table, labelText) {
+    if (!table || !labelText) return null;
     const rows = table.querySelectorAll('tr');
-    for (const row of rows) {
-      const cells = row.querySelectorAll('td, th');
-      for (let i = 0; i < cells.length - 1; i++) {
-        if (cells[i].textContent.trim().includes(labelText)) {
-          return cells[i + 1]; // 右侧 cell 是 value
+    const target = normalizeLabelText(labelText);
+
+    for (const exactOnly of [true, false]) {
+      for (const row of rows) {
+        const cells = row.querySelectorAll('td, th');
+        for (let i = 0; i < cells.length - 1; i++) {
+          const cellText = normalizeLabelText(cells[i].textContent);
+          const matched = exactOnly ? cellText === target : cellText.includes(target);
+          if (matched) return cells[i + 1];
         }
       }
     }
@@ -289,7 +314,26 @@
     input.dispatchEvent(new Event('change', { bubbles: true }));
     input.dispatchEvent(new KeyboardEvent('keydown', { key: 'Tab', code: 'Tab', keyCode: 9, bubbles: true }));
     input.dispatchEvent(new KeyboardEvent('keydown', { key: 'Enter', code: 'Enter', keyCode: 13, bubbles: true }));
+    input.dispatchEvent(new KeyboardEvent('keyup', { key: 'Enter', code: 'Enter', keyCode: 13, bubbles: true }));
     input.blur();
+    closeDropdowns(input.ownerDocument);
+  }
+
+  function closeDropdowns(doc) {
+    if (!doc) return;
+    doc.dispatchEvent(new KeyboardEvent('keydown', { key: 'Escape', code: 'Escape', keyCode: 27, bubbles: true }));
+    doc.body?.dispatchEvent(new MouseEvent('mousedown', { bubbles: true }));
+    doc.body?.dispatchEvent(new MouseEvent('mouseup', { bubbles: true }));
+    doc.body?.dispatchEvent(new MouseEvent('click', { bubbles: true }));
+    closeTypeaheadMenus(doc);
+  }
+
+  function closeTypeaheadMenus(doc) {
+    if (!doc) return;
+    Array.from(doc.querySelectorAll('.typeahead.dropdown-menu')).forEach(menu => {
+      menu.style.display = 'none';
+      menu.classList.remove('open');
+    });
   }
 
   function setDirectInput(cell, value) {
@@ -308,10 +352,23 @@
    */
   function _setVueInput(input, value) {
     const inputWin = input.ownerDocument.defaultView;
-    const nativeSetter = Object.getOwnPropertyDescriptor(
-      inputWin.HTMLInputElement.prototype, 'value'
-    ).set;
+    const proto = input.tagName === 'TEXTAREA'
+      ? inputWin.HTMLTextAreaElement.prototype
+      : inputWin.HTMLInputElement.prototype;
+    const nativeSetter = Object.getOwnPropertyDescriptor(proto, 'value').set;
     nativeSetter.call(input, value);
+
+    const wrappers = [input.parentElement, input.parentElement?.parentElement].filter(Boolean);
+    for (const wrapper of wrappers) {
+      const vue = wrapper.__vue__;
+      if (!vue) continue;
+      if ('currentValue' in vue) vue.currentValue = value;
+      if ('value' in vue && typeof vue.value !== 'function') vue.value = value;
+      if (typeof vue.setCurrentValue === 'function') {
+        try { vue.setCurrentValue(value); } catch (error) { console.warn('[ET818 Filler] setCurrentValue failed:', error); }
+      }
+    }
+
     input.dispatchEvent(new Event('input', { bubbles: true }));
     input.dispatchEvent(new Event('change', { bubbles: true }));
   }
@@ -322,6 +379,163 @@
     input.focus();
     _commitInput(input);
     return (input.value || '').trim() === String(value);
+  }
+
+  function setDirectInputByLabel(table, labelText, value) {
+    const cell = findFieldCell(table, labelText);
+    return setDirectInput(cell, value);
+  }
+
+  async function setTypeaheadInput(cell, value) {
+    if (!cell || value === undefined || value === null) return false;
+    const input = cell.querySelector('input, textarea');
+    if (!input) return false;
+
+    _setVueInput(input, String(value));
+    input.focus();
+    input.dispatchEvent(new KeyboardEvent('keydown', { key: 'ArrowDown', code: 'ArrowDown', keyCode: 40, bubbles: true }));
+    await sleep(250);
+
+    const doc = input.ownerDocument;
+    const candidate = Array.from(doc.querySelectorAll('.typeahead.dropdown-menu .dropdown-item, .dropdown-item'))
+      .filter(item => item.offsetParent !== null)
+      .find(item => item.textContent.trim() === String(value))
+      || Array.from(doc.querySelectorAll('.typeahead.dropdown-menu .dropdown-item, .dropdown-item'))
+        .filter(item => item.offsetParent !== null)
+        .find(item => item.textContent.trim().includes(String(value)) || String(value).includes(item.textContent.trim()));
+
+    if (candidate) {
+      clickCandidate(candidate);
+      await sleep(150);
+    }
+
+    _commitInput(input);
+    closeTypeaheadMenus(doc);
+    return (input.value || '').trim() === String(value);
+  }
+
+  async function fillFeeFirstRow(doc, totalAmount) {
+    if (!totalAmount) return { priceOk: false, countOk: false, found: false };
+    const feeTable = Array.from(doc.querySelectorAll('table')).find(t => {
+      const text = normalizeLabelText(t.innerText);
+      return text.includes('项目类别') && text.includes('项目名称')
+        && text.includes('单价') && text.includes('数量')
+        && text.includes('单位') && text.includes('金额');
+    });
+    if (!feeTable) return { priceOk: false, countOk: false, found: false };
+
+    await ensureTableRows(feeTable, 1, getNumberedRows, '团费表');
+    const headerMap = _buildHeaderMap(feeTable);
+    const feeRows = Array.from(feeTable.querySelectorAll('tr')).filter(r => {
+      const firstCell = r.querySelector('td, th');
+      return firstCell && /^\d+$/.test(firstCell.textContent.trim()) && r.querySelectorAll('input').length >= 3;
+    });
+    const firstFeeRow = feeRows[0];
+    if (!firstFeeRow) return { priceOk: false, countOk: false, found: true };
+
+    const cells = firstFeeRow.querySelectorAll('td, th');
+    const priceCell = cells[headerMap['单价']];
+    const countCell = cells[headerMap['数量']];
+    const priceInput = priceCell && priceCell.querySelector('input');
+    const countInput = countCell && countCell.querySelector('input');
+    return {
+      found: true,
+      priceOk: setNumberInput(priceInput, totalAmount),
+      countOk: setNumberInput(countInput, 1),
+    };
+  }
+
+  function fillParticipantCounts(table, travellers) {
+    const cell = findFieldCell(table, '参团人数');
+    if (!cell || !travellers) return false;
+    const adults = travellers.filter(t => t.person_type === '成人').length;
+    const children = travellers.filter(t => t.person_type === '儿童').length;
+    const inputs = getEditableInputs(cell);
+    if (inputs.length < 2) return false;
+    const adultOk = setNumberInput(inputs[0], adults || 0);
+    const childOk = setNumberInput(inputs[1], children || 0);
+    return adultOk && childOk;
+  }
+
+  function fillProductRemark(doc, remark) {
+    if (!remark) return false;
+    const productTable = Array.from(doc.querySelectorAll('table')).find(table => {
+      const text = normalizeLabelText(table.innerText);
+      return text.includes('备注信息') && text.includes('服务标准')
+        && text.includes('费用包含') && text.includes('费用不含');
+    });
+    if (!productTable) return false;
+    const noteCell = findFieldCell(productTable, '备注信息');
+    return setDirectInput(noteCell, remark);
+  }
+
+  function getEditableInputs(root) {
+    return Array.from(root.querySelectorAll('input')).filter(input => {
+      const type = (input.getAttribute('type') || 'text').toLowerCase();
+      if (type === 'hidden' || type === 'button' || type === 'submit') return false;
+      if (input.disabled || input.readOnly) return false;
+      return true;
+    });
+  }
+
+  function getNumberedRows(table) {
+    return Array.from(table.querySelectorAll('tr')).filter(row => {
+      const firstCell = row.querySelector('td, th');
+      return firstCell && /^\d+$/.test(firstCell.textContent.trim());
+    });
+  }
+
+  function findTableAddButton(table) {
+    if (!table) return null;
+    const doc = table.ownerDocument;
+    const tableRect = table.getBoundingClientRect();
+    const candidates = Array.from(doc.querySelectorAll('i.glyphicon-plus, .glyphicon-plus, .ivu-icon-plus, button, a, span'))
+      .filter(el => el.offsetParent !== null)
+      .filter(el => {
+        const rect = el.getBoundingClientRect();
+        const text = (el.textContent || '').trim();
+        const cls = String(el.className || '');
+        const looksLikeAdd = text === '+' || cls.includes('glyphicon-plus') || cls.includes('ivu-icon-plus') || cls.includes('plus');
+        if (!looksLikeAdd) return false;
+        return rect.top >= tableRect.top - 140 && rect.top <= tableRect.top + 80 && rect.left <= tableRect.left + 260;
+      })
+      .sort((a, b) => {
+        const ar = a.getBoundingClientRect();
+        const br = b.getBoundingClientRect();
+        const ad = Math.abs(ar.top - tableRect.top) + Math.abs(ar.left - tableRect.left);
+        const bd = Math.abs(br.top - tableRect.top) + Math.abs(br.left - tableRect.left);
+        return ad - bd;
+      });
+    if (!candidates.length) return null;
+    return candidates[0].closest('button, a') || candidates[0];
+  }
+
+  async function ensureTableRows(table, requiredRows, rowSelectorFn = getNumberedRows, label = '表格') {
+    if (!table || requiredRows <= 0) return false;
+    let rows = rowSelectorFn(table);
+    if (rows.length >= requiredRows) return true;
+
+    let attempts = 0;
+    while (rows.length < requiredRows && attempts < 10) {
+      const addButton = findTableAddButton(table);
+      if (!addButton) {
+        log(`  ⚠️ ${label} 行数不足 ${rows.length}/${requiredRows}，未找到左上角+号`);
+        return false;
+      }
+      addButton.dispatchEvent(new MouseEvent('mousedown', { bubbles: true }));
+      addButton.dispatchEvent(new MouseEvent('mouseup', { bubbles: true }));
+      addButton.dispatchEvent(new MouseEvent('click', { bubbles: true }));
+      await sleep(500);
+      rows = rowSelectorFn(table);
+      attempts++;
+    }
+
+    if (rows.length >= requiredRows) {
+      log(`  ✅ ${label} 已扩展到 ${rows.length} 行`);
+      return true;
+    }
+    log(`  ⚠️ ${label} 扩行后仍不足 ${rows.length}/${requiredRows}`);
+    return false;
   }
 
   /**
@@ -518,9 +732,14 @@
 
     if (!candidate) return false;
 
-    // Step 4: 点击候选项
+    // Step 4: 点击候选项并强制提交/关闭浮层
     clickCandidate(candidate);
     await sleep(options.after_select_wait || 500);
+    input.dispatchEvent(new KeyboardEvent('keydown', { key: 'Enter', code: 'Enter', keyCode: 13, bubbles: true }));
+    input.dispatchEvent(new KeyboardEvent('keyup', { key: 'Enter', code: 'Enter', keyCode: 13, bubbles: true }));
+    input.blur();
+    closeDropdowns(input.ownerDocument);
+    await sleep(300);
 
     // Step 5: 验证
     const committed = input.value;
@@ -556,9 +775,10 @@
 
   function clickCandidate(el) {
     el.dispatchEvent(new MouseEvent('mouseenter', { bubbles: true }));
+    el.dispatchEvent(new MouseEvent('mouseover', { bubbles: true }));
     el.dispatchEvent(new MouseEvent('mousedown', { bubbles: true }));
-    el.dispatchEvent(new MouseEvent('click', { bubbles: true }));
     el.dispatchEvent(new MouseEvent('mouseup', { bubbles: true }));
+    el.dispatchEvent(new MouseEvent('click', { bubbles: true }));
   }
 
   // ── 原生 select ──────────────────────────────────────────────
@@ -615,18 +835,22 @@
    * 返回 { biao: 标间数, dachuang: 大床数 }
    */
   function calculateRoomNeed(travellers) {
-    if (!travellers || travellers.length === 0) return { biao: 0, dachuang: 0 };
+    if (!travellers || travellers.length === 0) {
+      return { biao: 0, dachuang: 0, single_room_diff_needed: false };
+    }
 
-    const n = travellers.length;
     const sharing = travellers.filter(t => t.room_sharing === '是');
     const notSharing = travellers.filter(t => t.room_sharing === '否');
+    const unknown = travellers.filter(t => !t.room_sharing || (t.room_sharing !== '是' && t.room_sharing !== '否'));
 
-    if (sharing.length === n) {
-      return { biao: n * 0.5, dachuang: 0 };
-    } else if (notSharing.length === n) {
-      return { biao: Math.floor(n / 2), dachuang: n % 2 };
-    }
-    return { biao: Math.ceil(n / 2), dachuang: 0 };
+    // 未知状态默认按拼房处理
+    const effectiveSharing = sharing.length + unknown.length;
+
+    return {
+      biao: effectiveSharing * 0.5,
+      dachuang: notSharing.length,
+      single_room_diff_needed: notSharing.length > 0,
+    };
   }
 
   // ══════════════════════════════════════════════════════════════
@@ -698,6 +922,10 @@
     }
     log('✅ 主信息表已定位, rows: ' + mainTable.querySelectorAll('tr').length);
 
+    function step(name) {
+      log(`➡️ ${name}`);
+    }
+
     let successCount = 0;
     let failCount = 0;
     // ── Step 1: 线路模板 ──────────────────────────────────────
@@ -742,6 +970,7 @@
     const dateFields = [
       { label: '出团日期', value: order.departure_date },
       { label: '返程日期', value: order.return_date },
+      { label: '参观日期', value: order.departure_date },
     ];
     for (const f of dateFields) {
       if (!f.value) continue;
@@ -764,17 +993,26 @@
     const directFields = [
       { label: '订单电话/姓名', value: order.customer_name },
       { label: '订单号', value: order.order_no },
-      { label: '景区订单号', value: order.order_no },
+      { label: '景区订单号', value: '' },
     ];
     for (const f of directFields) {
-      if (!f.value) continue;
-      const cell = findFieldCell(mainTable, f.label);
-      const ok = setDirectInput(cell, f.value);
-      if (ok) { log(`  ✅ ${f.label}: ${f.value}`); successCount++; }
+      if (f.value === undefined || f.value === null) continue;
+      const ok = setDirectInputByLabel(mainTable, f.label, f.value);
+      if (ok) { log(`  ✅ ${f.label}: ${f.value || '(空)'}`); successCount++; }
       else { log(`  ⚠️ ${f.label} 写入失败`); failCount++; }
     }
 
     // ── Step 4: 搜索型下拉 ───────────────────────────────────
+    step('主信息下拉字段');
+
+    // 预约景区：默认无需预约
+    {
+      const scenicBookingValue = '无需预约';
+      const cell = findFieldCell(mainTable, '预约景区');
+      const ok = await setSearchableDropdown(doc, parentDoc, cell, scenicBookingValue, scenicBookingValue);
+      if (ok) { log(`  ✅ 预约景区: ${scenicBookingValue}`); successCount++; }
+      else { log(`  ⚠️ 预约景区未选中: ${scenicBookingValue}`); failCount++; }
+    }
 
     // 大交通：优先 parser 判断；无航班时默认“当地参”作为兜底
     {
@@ -804,12 +1042,10 @@
 
     // ── Step 5: 参团人数 ─────────────────────────────────────
     if (order.travellers?.length) {
-      const cell = findFieldCell(mainTable, '参团人数');
       const adults = order.travellers.filter(t => t.person_type === '成人').length;
       const children = order.travellers.filter(t => t.person_type === '儿童').length;
-      const countStr = children > 0 ? `${adults}大${children}小` : `${adults}`;
-      const ok = setDirectInput(cell, countStr);
-      if (ok) { log(`  ✅ 参团人数: ${countStr}`); successCount++; }
+      const ok = fillParticipantCounts(mainTable, order.travellers);
+      if (ok) { log(`  ✅ 参团人数: ${adults || 0}大${children || 0}小`); successCount++; }
       else { log('  ⚠️ 参团人数写入失败'); failCount++; }
     }
 
@@ -836,15 +1072,21 @@
             else { log(`  ⚠️ 用房星级未选中: ${order.room_info.star_rating}`); failCount++; }
           }
 
-          let biao = order.room_info?.biao || 0;
-          let dachuang = order.room_info?.dachuang || 0;
-          if (!biao && !dachuang && order.travellers?.length) {
-            const roomCalc = calculateRoomNeed(order.travellers);
-            biao = roomCalc.biao || 0;
-            dachuang = roomCalc.dachuang || 0;
+          const roomNeed = order.travellers?.length ? calculateRoomNeed(order.travellers) : null;
+          let starRating = order.room_info?.star_rating || '';
+          if (roomNeed) {
+            var biao = roomNeed.biao || 0;
+            var dachuang = roomNeed.dachuang || 0;
+            var singleRoomFlag = roomNeed.single_room_diff_needed;
+            log(`  🔍 房型计算: 是拼房${order.travellers.filter(t=>t.room_sharing==='是').length}人/否拼房${order.travellers.filter(t=>t.room_sharing==='否').length}人 → ${biao}标间+${dachuang}大床`);
+          } else {
+            var biao = order.room_info?.biao || 0;
+            var dachuang = order.room_info?.dachuang || 0;
+            var singleRoomFlag = false;
           }
 
-          const roomInputs = roomParent.querySelectorAll('input');
+          const refreshedRoomCell = findFieldCell(mainTable, '用房') || roomCell;
+          const roomInputs = getEditableInputs(refreshedRoomCell);
           if (roomInputs.length >= 3) {
             const okBiao = setNumberInput(roomInputs[1], biao || 0);
             const okDachuang = setNumberInput(roomInputs[2], dachuang || 0);
@@ -852,6 +1094,12 @@
             else { log(`  ⚠️ 用房标间写入失败: ${biao || 0}`); failCount++; }
             if (okDachuang) { log(`  ✅ 用房: ${dachuang || 0} 大床`); successCount++; }
             else { log(`  ⚠️ 用房大床写入失败: ${dachuang || 0}`); failCount++; }
+            if (singleRoomFlag || order.room_info?.single_room_diff_needed) {
+              log('  ℹ️ 存在不拼房客人：请核对是否已补单房差');
+            }
+          } else {
+            log(`  ⚠️ 用房输入框不足: ${roomInputs.length}`);
+            failCount++;
           }
         }
       }
@@ -859,50 +1107,32 @@
 
     // ── Step 7: 团费第一栏 ─────────────────────────────────────
     if (order.total_amount) {
-      const feeTable = Array.from(doc.querySelectorAll('table')).find(t => (t.innerText || '').includes('团费') && (t.innerText || '').includes('单价') && (t.innerText || '').includes('数量'));
-      if (feeTable) {
-        const feeRows = Array.from(feeTable.querySelectorAll('tr')).filter(r => r.querySelectorAll('input').length >= 3);
-        const firstFeeRow = feeRows[0];
-        if (firstFeeRow) {
-          const feeInputs = firstFeeRow.querySelectorAll('input');
-          if (feeInputs[1]) _setVueInput(feeInputs[1], String(order.total_amount));
-          if (feeInputs[2]) _setVueInput(feeInputs[2], '1');
-          log(`  ✅ 团费单价: ${order.total_amount}`);
-          log('  ✅ 团费数量: 1');
-          successCount += 2;
-        }
+      const feeResult = await fillFeeFirstRow(doc, order.total_amount);
+      if (!feeResult.found) {
+        log('  ⚠️ 未找到团费表');
+        failCount++;
+      } else {
+        if (feeResult.priceOk) { log(`  ✅ 团费单价: ${order.total_amount}`); successCount++; }
+        else { log(`  ⚠️ 团费单价写入失败: ${order.total_amount}`); failCount++; }
+        if (feeResult.countOk) { log('  ✅ 团费数量: 1'); successCount++; }
+        else { log('  ⚠️ 团费数量写入失败'); failCount++; }
       }
     }
 
     // ── Step 8: 备注 ─────────────────────────────────────────
+    step('备注信息');
     if (order.merchant_note) {
-      // 备注在"产品-备注信息"里，需要先展开"产品"区块
-      // 找到"产品"标签并点击展开
-      const productTabs = doc.querySelectorAll('div, span, a, li');
-      for (const tab of productTabs) {
-        if (tab.textContent.trim() === '产品' && tab.offsetParent !== null) {
-          tab.click();
-          await sleep(500);
-          break;
-        }
-      }
-
-      // 找备注字段（可能叫"备注信息"或"备注"）
-      const noteCell = findFieldCell(mainTable, '备注信息') || findFieldCell(mainTable, '备注');
-      if (noteCell) {
-        const ok = setDirectInput(noteCell, order.merchant_note);
-        if (ok) { log('  ✅ 备注已填写'); successCount++; }
-        else { log('  ⚠️ 备注写入失败'); failCount++; }
-      } else {
-        log('  ⚠️ 未找到备注字段');
-        failCount++;
-      }
+      const ok = fillProductRemark(doc, order.merchant_note);
+      if (ok) { log('  ✅ 备注信息已填写'); successCount++; }
+      else { log('  ⚠️ 备注信息写入失败'); failCount++; }
     }
 
     // ── Step 9: 客人名单 ─────────────────────────────────────
+    step('客人名单');
     await fillTravellers(order, doc);
 
     // ── Step 10: 接送信息 ─────────────────────────────────────
+    step('接送信息');
     if (order.pickup_dropoff?.length) {
       // 有航班 → 填接送段（从航班信息提取）
       const ok = await fillPickupDropoff(order, doc, parentDoc);
@@ -914,6 +1144,34 @@
       if (ok) { log('  ✅ 接送信息: 接机+送机'); successCount++; }
       else { log('  ⚠️ 接机送机填写失败'); failCount++; }
     }
+
+    // ── Step 11: 联动后最终补写 ─────────────────────────────────
+    const finalMainTable = findMainTable(doc) || mainTable;
+    if (order.order_no) {
+      const orderOk = setDirectInputByLabel(finalMainTable, '订单号', order.order_no);
+      const scenicOk = setDirectInputByLabel(finalMainTable, '景区订单号', '');
+      if (orderOk) { log(`  ✅ 最终补写订单号: ${order.order_no}`); successCount++; }
+      else { log(`  ⚠️ 最终补写订单号失败: ${order.order_no}`); failCount++; }
+      if (scenicOk) { log('  ✅ 最终清空景区订单号'); successCount++; }
+      else { log('  ⚠️ 最终清空景区订单号失败'); failCount++; }
+    }
+    if (order.departure_date) {
+      const visitDateCell = findFieldCell(finalMainTable, '参观日期');
+      const visitEtDate = visitDateCell && visitDateCell.querySelector('.et-date');
+      const visitDateResult = visitEtDate ? _setEtDate(visitEtDate, order.departure_date) : { ok: setThreePartDate(visitDateCell, order.departure_date), detail: 'three-part' };
+      if (visitDateResult.ok) { log(`  ✅ 最终补写参观日期: ${order.departure_date}`); successCount++; }
+      else { log(`  ⚠️ 最终补写参观日期失败: ${order.departure_date} [${visitDateResult.detail}]`); failCount++; }
+    }
+    if (order.total_amount) {
+      const feeResult = await fillFeeFirstRow(doc, order.total_amount);
+      if (feeResult.found && feeResult.priceOk) { log(`  ✅ 最终补写团费单价: ${order.total_amount}`); successCount++; }
+      else { log(`  ⚠️ 最终补写团费单价失败: ${order.total_amount}`); failCount++; }
+      if (feeResult.found && feeResult.countOk) { log('  ✅ 最终补写团费数量: 1'); successCount++; }
+      else { log('  ⚠️ 最终补写团费数量失败'); failCount++; }
+    }
+    await sleep(300);
+    closeDropdowns(doc);
+    closeTypeaheadMenus(doc);
 
     log(`\n📊 填表完成: ${successCount} 成功 / ${failCount} 失败`);
   }
@@ -953,6 +1211,7 @@
       return;
     }
 
+    await ensureTableRows(guestTable, order.travellers.length, getNumberedRows, '客人表');
     const tbody = guestTable.querySelector('tbody');
     const rows = tbody ? tbody.querySelectorAll('tr') : guestTable.querySelectorAll('tr');
 
@@ -1007,12 +1266,12 @@
   async function fillPickupDropoff(order, doc, parentDoc) {
     if (!order.pickup_dropoff || order.pickup_dropoff.length === 0) return false;
 
-    // 找接送表：含 "航班号" 和 "路线" 的表
     const tables = doc.querySelectorAll('table');
     let pickupTable = null;
     for (const t of tables) {
       const text = t.innerText || '';
-      if (text.includes('航班号') && (text.includes('路线') || text.includes('出发地'))) {
+      if ((text.includes('操作') && text.includes('日期') && text.includes('出发地') && text.includes('班次')) ||
+          (text.includes('出发地') && text.includes('班次时间') && text.includes('接送描述'))) {
         pickupTable = t;
         break;
       }
@@ -1024,43 +1283,83 @@
     }
 
     const headerMap = _buildHeaderMap(pickupTable);
-    const rows = pickupTable.querySelectorAll('tr');
+    await ensureTableRows(pickupTable, order.pickup_dropoff.length, getNumberedRows, '接送表');
+    const dataRows = Array.from(pickupTable.querySelectorAll('tr')).filter(function(r) {
+      const firstCell = r.querySelector('td');
+      const firstText = firstCell ? firstCell.textContent.trim() : '';
+      return /^\d+$/.test(firstText);
+    });
+
+    function getPickupCell(row, names, fallbackIndex) {
+      const cells = row.querySelectorAll('td, th');
+      for (const name of names) {
+        if (headerMap[name] !== undefined && cells[headerMap[name]]) return cells[headerMap[name]];
+      }
+      return cells[fallbackIndex] || null;
+    }
 
     let filled = 0;
     for (let i = 0; i < order.pickup_dropoff.length; i++) {
       const seg = order.pickup_dropoff[i];
-      const row = rows[i + 1]; // 跳过表头
+      const row = dataRows[i];
       if (!row) {
         log(`  ⚠️ 接送表第${i + 1}行不存在`);
         continue;
       }
 
-      const cells = row.querySelectorAll('td, th');
+      const flightCell = getPickupCell(row, ['班次', '航班号'], 4);
+      const dateCell = getPickupCell(row, ['日期', '接送日期'], 2);
+      const placeCell = getPickupCell(row, ['出发地', '路线', '目的地'], 3);
+      const typeCell = getPickupCell(row, ['操作', '类型'], 1);
+      const timeCell = getPickupCell(row, ['班次时间', '时间', '接送时间'], 5);
 
-      // 填写各字段
-      if (seg.flight_no) setDirectInput(cells[headerMap['航班号']], seg.flight_no);
+      let typeOk = true;
+      const typeValue = i === 0 ? '1接机/站' : '2送机/站';
+      if (typeCell) {
+        typeOk = await setSearchableDropdown(doc, parentDoc, typeCell, typeValue, typeValue);
+        if (typeOk) log(`  ✅ 接送${i + 1}类型: ${typeValue}`);
+        else log(`  ⚠️ 接送${i + 1}类型未选中: ${typeValue}`);
+      }
 
-      // 日期：使用 register_time（去程=到达时间，返程=出发时间）
+      let flightOk = true;
+      if (seg.flight_no) {
+        flightOk = setDirectInput(flightCell, seg.flight_no);
+        if (flightOk) log(`  ✅ 接送${i + 1}班次: ${seg.flight_no}`);
+        else log(`  ⚠️ 接送${i + 1}班次写入失败: ${seg.flight_no}`);
+      }
+
+      let dateOk = false;
       const dateStr = seg.register_time ? seg.register_time.split(' ')[0] : '';
       if (dateStr) {
-        const dateCell = cells[headerMap['日期']] || cells[headerMap['接送日期']];
-        if (dateCell) setDirectInput(dateCell, dateStr);
+        const etDate = dateCell ? dateCell.querySelector('.et-date') : null;
+        if (etDate) {
+          const result = _setEtDate(etDate, dateStr);
+          dateOk = result.ok;
+          if (dateOk) log(`  ✅ 接送${i + 1}日期: ${dateStr}`);
+          else log(`  ⚠️ 接送${i + 1}日期写入失败: ${dateStr} [${result.detail}]`);
+        } else if (dateCell) {
+          dateOk = setDirectInput(dateCell, dateStr);
+          if (dateOk) log(`  ✅ 接送${i + 1}日期: ${dateStr}`);
+          else log(`  ⚠️ 接送${i + 1}日期写入失败: ${dateStr}`);
+        }
       }
 
-      // 时间：使用 register_time
-      const timeStr = seg.register_time ? seg.register_time.split(' ')[1] || '' : '';
+      let timeOk = true;
+      const timeStr = seg.register_time ? (seg.register_time.split(' ')[1] || '').slice(0, 5) : '';
       if (timeStr) {
-        const timeCell = cells[headerMap['时间']] || cells[headerMap['接送时间']];
-        if (timeCell) setDirectInput(timeCell, timeStr);
+        timeOk = setDirectInput(timeCell, timeStr);
+        if (timeOk) log(`  ✅ 接送${i + 1}班次时间: ${timeStr}`);
+        else log(`  ⚠️ 接送${i + 1}班次时间写入失败: ${timeStr}`);
       }
 
-      // 路线：使用 register_airport（去程=到达机场，返程=出发机场）
+      let placeOk = true;
       if (seg.register_airport) {
-        const routeCell = cells[headerMap['路线']] || cells[headerMap['出发地']] || cells[headerMap['目的地']];
-        if (routeCell) setDirectInput(routeCell, seg.register_airport);
+        placeOk = setDirectInput(placeCell, seg.register_airport);
+        if (placeOk) log(`  ✅ 接送${i + 1}出发地: ${seg.register_airport}`);
+        else log(`  ⚠️ 接送${i + 1}出发地写入失败: ${seg.register_airport}`);
       }
 
-      filled++;
+      if (typeOk || flightOk || dateOk || timeOk || placeOk) filled++;
     }
 
     log(`  ✅ 已填 ${filled}/${order.pickup_dropoff.length} 段接送`);
@@ -1089,6 +1388,7 @@
       return false;
     }
 
+    await ensureTableRows(pickupTable, 2, getNumberedRows, '接送表');
     const dataRows = Array.from(pickupTable.querySelectorAll('tr')).filter(function(r) {
       const firstCell = r.querySelector('td');
       const firstText = firstCell ? firstCell.textContent.trim() : '';
@@ -1105,37 +1405,46 @@
       { type: '2送机/站', date: order.return_date, city: (order.departure_city || '') + '机场' },
     ];
 
+    const headerMap = _buildHeaderMap(pickupTable);
+    function getPickupCell(row, names, fallbackIndex) {
+      const cells = row.querySelectorAll('td, th');
+      for (const name of names) {
+        if (headerMap[name] !== undefined && cells[headerMap[name]]) return cells[headerMap[name]];
+      }
+      return cells[fallbackIndex] || null;
+    }
+
     let filled = 0;
     for (let i = 0; i < entries.length; i++) {
       const entry = entries[i];
       const row = dataRows[i];
       if (!row) continue;
 
-      const inputs = row.querySelectorAll('input');
-      if (inputs[0]) {
-        _setVueInput(inputs[0], entry.type);
-        inputs[0].focus();
-        _commitInput(inputs[0]);
-        if ((inputs[0].value || '').trim() === entry.type) log(`  ✅ 接送${i + 1}类型: ${entry.type}`);
-        else log(`  ⚠️ 接送${i + 1}类型未选中: ${entry.type}`);
-      }
+      const typeCell = getPickupCell(row, ['操作', '类型'], 1);
+      const dateCell = getPickupCell(row, ['日期', '接送日期'], 2);
+      const cityCell = getPickupCell(row, ['出发地', '目的地'], 3);
+      const typeOk = await setSearchableDropdown(doc, parentDoc, typeCell, entry.type, entry.type);
+      if (typeOk) log(`  ✅ 接送${i + 1}类型: ${entry.type}`);
+      else log(`  ⚠️ 接送${i + 1}类型未选中: ${entry.type}`);
 
-      const etDate = row.querySelector('.et-date');
+      let dateOk = false;
+      const etDate = dateCell ? dateCell.querySelector('.et-date') : null;
       if (etDate && entry.date) {
         const dateResult = _setEtDate(etDate, entry.date);
+        dateOk = dateResult.ok;
         if (dateResult.ok) log(`  ✅ 接送${i + 1}日期: ${entry.date}`);
         else log(`  ⚠️ 接送${i + 1}日期写入失败: ${entry.date} [${dateResult.detail}]`);
+      } else if (dateCell && entry.date) {
+        dateOk = setDirectInput(dateCell, entry.date);
+        if (dateOk) log(`  ✅ 接送${i + 1}日期: ${entry.date}`);
+        else log(`  ⚠️ 接送${i + 1}日期写入失败: ${entry.date}`);
       }
 
-      if (inputs[4] && entry.city) {
-        _setVueInput(inputs[4], entry.city);
-        inputs[4].focus();
-        _commitInput(inputs[4]);
-        if ((inputs[4].value || '').trim() === entry.city) log(`  ✅ 接送${i + 1}出发地: ${entry.city}`);
-        else log(`  ⚠️ 接送${i + 1}出发地未选中: ${entry.city}`);
-      }
+      const cityOk = await setSearchableDropdown(doc, parentDoc, cityCell, entry.city, entry.city);
+      if (cityOk) log(`  ✅ 接送${i + 1}出发地: ${entry.city}`);
+      else log(`  ⚠️ 接送${i + 1}出发地未选中: ${entry.city}`);
 
-      filled++;
+      if (typeOk || dateOk || cityOk) filled++;
     }
 
     log(`  ✅ 已填 ${filled} 段接送`);
