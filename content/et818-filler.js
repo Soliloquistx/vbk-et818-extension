@@ -1354,9 +1354,9 @@
 
       let placeOk = true;
       if (seg.register_airport) {
-        placeOk = setDirectInput(placeCell, seg.register_airport);
+        placeOk = await setSearchableDropdown(doc, parentDoc, placeCell, seg.register_airport, seg.register_airport);
         if (placeOk) log(`  ✅ 接送${i + 1}出发地: ${seg.register_airport}`);
-        else log(`  ⚠️ 接送${i + 1}出发地写入失败: ${seg.register_airport}`);
+        else log(`  ⚠️ 接送${i + 1}出发地未选中: ${seg.register_airport}`);
       }
 
       if (typeOk || flightOk || dateOk || timeOk || placeOk) filled++;
