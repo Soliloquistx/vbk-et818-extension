@@ -1053,7 +1053,7 @@
     {
       const cell = findFieldCell(mainTable, '销售');
       if (cell) {
-        const ok = setDirectInput(cell, '李明强');
+        const ok = await setSearchableDropdown(doc, parentDoc, cell, '李明强', '李明强');
         if (ok) { log('  ✅ 销售: 李明强'); successCount++; }
         else { log('  ⚠️ 销售写入失败'); failCount++; }
       }
