@@ -90,7 +90,7 @@
         生日: t.birth_date ? `${t.birth_date.year}-${t.birth_date.month}-${t.birth_date.day}` : '(空)',
         拼房: t.room_sharing,
       })));
-      console.log('has_real_id:', data?.travellers?.some(t => t.id_no && /\d{15,18}/.test(t.id_no)));
+      console.log('has_real_id:', data?.travellers?.some(t => t.id_no && /(?:[\d*]{15,17}[\d*Xx]?|[\d*]{14,17}[Xx])/.test(t.id_no)));
       console.log('has_phone:', data?.travellers?.some(t => t.phone && t.phone.length >= 11));
       console.groupEnd();
 
@@ -147,7 +147,7 @@
 
     const tCount = data.travellers ? data.travellers.length : 0;
     const fCount = data.flights ? data.flights.length : 0;
-    const idCount = data.travellers ? data.travellers.filter(t => t.id_no && /\d{15,18}/.test(t.id_no)).length : 0;
+    const idCount = data.travellers ? data.travellers.filter(t => t.id_no && /(?:[\d*]{15,17}[\d*Xx]?|[\d*]{14,17}[Xx])/.test(t.id_no)).length : 0;
     const phoneCount = data.travellers ? data.travellers.filter(t => t.phone && t.phone.length >= 11).length : 0;
     const info = [
       `订单号: ${data.order_no}`,
@@ -239,7 +239,7 @@
     let travellerHtml = '';
     if (data.travellers?.length) {
       travellerHtml = data.travellers.map((t, i) => {
-        const idOk = t.id_no && /\d{15,18}/.test(t.id_no);
+        const idOk = t.id_no && /(?:[\d*]{15,17}[\d*Xx]?|[\d*]{14,17}[Xx])/.test(t.id_no);
         const phoneOk = t.phone && t.phone.length >= 11;
         const birthOk = t.birth_date?.year;
         return `
