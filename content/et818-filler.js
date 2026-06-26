@@ -1354,9 +1354,10 @@
 
       let placeOk = true;
       if (seg.register_airport) {
-        placeOk = await setSearchableDropdown(doc, parentDoc, placeCell, seg.register_airport, seg.register_airport);
-        if (placeOk) log(`  ✅ 接送${i + 1}出发地: ${seg.register_airport}`);
-        else log(`  ⚠️ 接送${i + 1}出发地未选中: ${seg.register_airport}`);
+        const normalizedPlace = _normalizeCityName(seg.register_airport);
+        placeOk = await setSearchableDropdown(doc, parentDoc, placeCell, normalizedPlace, normalizedPlace);
+        if (placeOk) log(`  ✅ 接送${i + 1}出发地: ${normalizedPlace}`);
+        else log(`  ⚠️ 接送${i + 1}出发地未选中: ${normalizedPlace}`);
       }
 
       if (typeOk || flightOk || dateOk || timeOk || placeOk) filled++;
@@ -1401,8 +1402,8 @@
     }
 
     const entries = [
-      { type: '1接机/站', date: order.departure_date, city: (order.departure_city || '') + '机场' },
-      { type: '2送机/站', date: order.return_date, city: (order.departure_city || '') + '机场' },
+      { type: '1接机/站', date: order.departure_date, city: _normalizeCityName((order.departure_city || '') + '机场') },
+      { type: '2送机/站', date: order.return_date, city: _normalizeCityName((order.departure_city || '') + '机场') },
     ];
 
     const headerMap = _buildHeaderMap(pickupTable);
@@ -1440,9 +1441,9 @@
         else log(`  ⚠️ 接送${i + 1}日期写入失败: ${entry.date}`);
       }
 
-      const cityOk = await setSearchableDropdown(doc, parentDoc, cityCell, entry.city, entry.city);
-      if (cityOk) log(`  ✅ 接送${i + 1}出发地: ${entry.city}`);
-      else log(`  ⚠️ 接送${i + 1}出发地未选中: ${entry.city}`);
+      const cityOk = await setSearchableDropdown(doc, parentDoc, cityCell, _normalizeCityName(entry.city), _normalizeCityName(entry.city));
+      if (cityOk) log(`  ✅ 接送${i + 1}出发地: ${_normalizeCityName(entry.city)}`);
+      else log(`  ⚠️ 接送${i + 1}出发地未选中: ${_normalizeCityName(entry.city)}`);
 
       if (typeOk || dateOk || cityOk) filled++;
     }
@@ -1460,6 +1461,24 @@
       if (text) map[text] = idx;
     });
     return map;
+  }
+
+  // ── 城市名称标准化（与 parser.js 同步）─────────────────────────
+
+  function _normalizeCityName(name) {
+    if (!name) return '';
+    const map = {
+      '蘭州': '兰州',
+      '西寧': '西宁',
+      '敦煌': '敦煌',
+    };
+    if (map[name]) return map[name];
+    if (name.includes('曹家堡')) return '西宁';
+    let result = name;
+    for (const [trad, simp] of Object.entries(map)) {
+      result = result.split(trad).join(simp);
+    }
+    return result;
   }
 
   // ── 工具 ──────────────────────────────────────────────────────
