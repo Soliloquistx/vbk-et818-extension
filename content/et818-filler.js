@@ -16,7 +16,9 @@
   'use strict';
 
   const STORAGE_KEY = 'vbk_orders';
+  const SALES_KEY = 'vbk_sales_person';
   let currentOrder = null;
+  let currentSalesPerson = '李明强';
   let panel = null;
   window.__vbkErrors = window.__vbkErrors || [];
   if (!window.__vbkErrorHooked) {
@@ -42,6 +44,11 @@
     if (orderList.length === 0) return; // 没有数据就不注入面板
 
     currentOrder = orderList[0]; // 默认用最新一条
+
+    // ponytail: 读存储的销售姓名
+    const salesStored = (await chrome.storage.local.get(SALES_KEY))[SALES_KEY];
+    if (salesStored) currentSalesPerson = salesStored;
+
     buildPanel(orderList);
 
     // 监听 storage 变化，实时刷新面板
@@ -86,6 +93,11 @@
             </select>
           </div>
         ` : ''}
+        <div style="display:flex;align-items:center;gap:4px;margin-bottom:6px;">
+          <label style="font-size:11px;color:#656d76;">销售</label>
+          <input id="vbk-sales-input" value="${currentSalesPerson}"
+            style="flex:1;padding:2px 6px;border:1px solid #d0d7de;border-radius:4px;font-size:12px;">
+        </div>
         <div class="vbk-panel-actions">
           <button id="vbk-fill-all" class="vbk-btn-primary">⚡ 一键填表</button>
           <button id="vbk-fill-guest" class="vbk-btn-secondary">👥 仅填客人</button>
@@ -184,6 +196,15 @@
       log('🗑️ 已清空所有 VBK 数据');
       panel.querySelector('.vbk-panel-body').innerHTML =
         '<div class="vbk-empty">无数据，请先在 VBK 订单页抓取</div>';
+    });
+
+    // ponytail: 销售姓名存储
+    document.getElementById('vbk-sales-input')?.addEventListener('blur', (e) => {
+      const name = e.target.value.trim();
+      if (name && name !== currentSalesPerson) {
+        currentSalesPerson = name;
+        chrome.storage.local.set({ [SALES_KEY]: name });
+      }
     });
   }
 
@@ -1023,11 +1044,13 @@
       else { log(`  ⚠️ 大交通未选中: ${transportValue}`); failCount++; }
     }
 
-    // 团队类别：默认快拼团
+    // 团队类别：从 VBK 意向团标签提取，兜底快拼团
     {
       const cell = findFieldCell(mainTable, '团队类别');
-      const ok = await setSearchableDropdown(doc, parentDoc, cell, '快拼团', '快拼团');
-      if (ok) { log(`  ✅ 团队类别: 快拼团`); successCount++; }
+      const teamMap = { '普通': '快拼团', '老友': '老友团', '青年': '青年团', '亲子': '亲子团' };
+      const teamValue = teamMap[order.team_category] || order.team_category || '快拼团';
+      const ok = await setSearchableDropdown(doc, parentDoc, cell, teamValue, teamValue);
+      if (ok) { log(`  ✅ 团队类别: ${teamValue}`); successCount++; }
       else { log(`  ⚠️ 团队类别未选中`); failCount++; }
     }
 
@@ -1053,8 +1076,8 @@
     {
       const cell = findFieldCell(mainTable, '销售');
       if (cell) {
-        const ok = await setSearchableDropdown(doc, parentDoc, cell, '李明强', '李明强');
-        if (ok) { log('  ✅ 销售: 李明强'); successCount++; }
+        const ok = await setSearchableDropdown(doc, parentDoc, cell, currentSalesPerson, currentSalesPerson);
+        if (ok) { log(`  ✅ 销售: ${currentSalesPerson}`); successCount++; }
         else { log('  ⚠️ 销售写入失败'); failCount++; }
       }
     }
@@ -1478,6 +1501,10 @@
     for (const [trad, simp] of Object.entries(map)) {
       result = result.split(trad).join(simp);
     }
+    // ponytail: strip airport suffix — ET818 下拉只有城市名
+    result = result.replace(/机场(T\d)?/g, '').trim();
+    // ponytail: strip district suffixes — "兰州中川" → "兰州"
+    result = result.replace(/中川|浦东|虹桥|双流|江北|咸阳|萧山|禄口|天河|美兰|龙洞堡|首都|大兴|新郑|黄花|宝安|白云|长乐/g, '').trim();
     return result;
   }
 
