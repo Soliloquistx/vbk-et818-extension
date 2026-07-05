@@ -82,7 +82,7 @@
 
     panel = document.createElement('div');
     panel.id = 'vbk-et818-panel';
-    panel.className = 'vbk-minimized';
+    panel.className = 'vbk-compact';
     panel.innerHTML = `
       <div class="vbk-panel-header" id="vbk-panel-drag">
         <span class="vbk-panel-title">🔷 VBK 订单数据</span>
@@ -104,7 +104,7 @@
             </select>
           </div>
         ` : ''}
-        <div style="display:flex;align-items:center;gap:4px;margin-bottom:6px;">
+        <div class="vbk-sales-row" style="display:flex;align-items:center;gap:4px;margin-bottom:6px;">
           <label style="font-size:11px;color:#656d76;">销售</label>
           <input id="vbk-sales-input" value="${currentSalesPerson}"
             style="flex:1;padding:2px 6px;border:1px solid #d0d7de;border-radius:4px;font-size:12px;">
@@ -147,7 +147,13 @@
         }).join('<br>  ')
       : '';
 
-    el.innerHTML = `
+    const compactSummary = `
+      <div class="vbk-summary-row"><span class="vk">订单号</span><span class="vv">${o.order_no || '-'}</span></div>
+      <div class="vbk-summary-row"><span class="vk">姓名</span><span class="vv">${o.customer_name || names || '-'}</span></div>
+      <div class="vbk-summary-row"><span class="vk">日期</span><span class="vv">${o.departure_date || '-'} → ${o.return_date || '-'}</span></div>
+    `;
+
+    const fullSummary = `
       <div class="vbk-summary-row"><span class="vk">订单号</span><span class="vv">${o.order_no}</span></div>
       <div class="vbk-summary-row"><span class="vk">产品</span><span class="vv">${o.route_name || o.product_name || '-'}</span></div>
       <div class="vbk-summary-row"><span class="vk">日期</span><span class="vv">${o.departure_date || '-'} → ${o.return_date || '-'}</span></div>
@@ -164,17 +170,25 @@
       ${o.total_amount ? `<div class="vbk-summary-row"><span class="vk">总计</span><span class="vv">¥${o.total_amount}</span></div>` : ''}
       ${o.encrypted_hidden ? '<div class="vbk-summary-warn">⚠️ 加密未解密</div>' : ''}
     `;
+
+    el.innerHTML = `<div class="vbk-compact-summary">${compactSummary}</div><div class="vbk-full-summary">${fullSummary}</div>`;
   }
 
   function bindPanelEvents(orderList) {
-    // 关闭
+    // 关闭到右下角圆点
     document.getElementById('vbk-panel-close')?.addEventListener('click', () => {
-      panel.style.display = 'none';
+      panel.classList.remove('vbk-compact');
+      panel.classList.add('vbk-minimized');
     });
 
-    // 折叠/展开
+    // 精简/完整切换；圆点状态下点开回精简
     document.getElementById('vbk-panel-collapse')?.addEventListener('click', () => {
-      panel.classList.toggle('vbk-minimized');
+      if (panel.classList.contains('vbk-minimized')) {
+        panel.classList.remove('vbk-minimized');
+        panel.classList.add('vbk-compact');
+        return;
+      }
+      panel.classList.toggle('vbk-compact');
     });
 
     // 切换订单
@@ -965,10 +979,25 @@
     return null;
   }
 
-  async function waitForScenicVisit(doc, attempts = 10) {
+  function productTableHasDate(doc, dateStr) {
+    if (!dateStr) return true;
+    const tables = Array.from(doc.querySelectorAll('table'));
+    const productTable = tables.find(table => {
+      const text = table.innerText || '';
+      return text.includes('日期') && text.includes('旅游线路') && text.includes('交通工具');
+    });
+    if (!productTable) return false;
+    const compactDate = dateStr.replace(/-/g, '');
+    const values = Array.from(productTable.querySelectorAll('input, textarea'))
+      .map(input => input.value || '')
+      .join('');
+    return values.includes(compactDate) || values.includes(dateStr) || productTable.textContent.includes(dateStr);
+  }
+
+  async function waitForScenicVisit(doc, expectedReturnDate, attempts = 20) {
     for (let i = 0; i < attempts; i++) {
       const scenicVisit = findScenicVisit(doc);
-      if (scenicVisit?.date) return scenicVisit;
+      if (scenicVisit?.date && productTableHasDate(doc, expectedReturnDate)) return scenicVisit;
       await sleep(300);
     }
     return findScenicVisit(doc);
@@ -1153,28 +1182,8 @@
       else { log(`  ⚠️ ${f.label} 写入失败`); failCount++; }
     }
 
-    const scenicVisit = await waitForScenicVisit(doc);
-    const visitDate = scenicVisit?.date || order.departure_date;
-    if (visitDate) {
-      const visitDateCell = findFieldCell(mainTable, '参观日期');
-      const visitEtDate = visitDateCell && visitDateCell.querySelector('.et-date');
-      const visitDateResult = visitEtDate ? _setEtDate(visitEtDate, visitDate) : { ok: setThreePartDate(visitDateCell, visitDate), detail: 'three-part' };
-      if (visitDateResult.ok) { log(`  ✅ 参观日期: ${visitDate}`); successCount++; }
-      else { log(`  ⚠️ 参观日期写入失败: ${visitDate} [${visitDateResult.detail}]`); failCount++; }
-    }
-
     // ── Step 4: 搜索型下拉 ───────────────────────────────────
     step('主信息下拉字段');
-
-    // 预约景区：产品组日期行命中需预约景区时选景区，否则默认无需预约
-    {
-      const scenicBookingValue = scenicVisit?.scenic || '无需预约';
-      const cell = findFieldCell(mainTable, '预约景区');
-      const ok = await setSearchableDropdown(doc, parentDoc, cell, scenicBookingValue, scenicBookingValue);
-      if (ok) { log(`  ✅ 预约景区: ${scenicBookingValue}`); successCount++; }
-      else { log(`  ⚠️ 预约景区未选中: ${scenicBookingValue}`); failCount++; }
-      if (scenicVisit?.date) log(`  ✅ 预约景区参观日期: ${scenicVisit.date}`);
-    }
 
     // 大交通：优先 parser 判断；无航班时默认“当地参”作为兜底
     {
@@ -1311,6 +1320,15 @@
 
     // ── Step 11: 联动后最终补写 ─────────────────────────────────
     const finalMainTable = findMainTable(doc) || mainTable;
+    const scenicVisit = await waitForScenicVisit(doc, order.return_date);
+    const visitDate = scenicVisit?.date || order.departure_date;
+    const scenicBookingValue = scenicVisit?.scenic || '无需预约';
+    {
+      const scenicCell = findFieldCell(finalMainTable, '预约景区');
+      const scenicOk = await setSearchableDropdown(doc, parentDoc, scenicCell, scenicBookingValue, scenicBookingValue);
+      if (scenicOk) { log(`  ✅ 最终预约景区: ${scenicBookingValue}`); successCount++; }
+      else { log(`  ⚠️ 最终预约景区未选中: ${scenicBookingValue}`); failCount++; }
+    }
     if (order.order_no) {
       const orderOk = setDirectInputByLabel(finalMainTable, '订单号', order.order_no);
       const scenicOk = setDirectInputByLabel(finalMainTable, '景区订单号', '');
