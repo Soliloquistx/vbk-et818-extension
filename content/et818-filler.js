@@ -17,6 +17,16 @@
 
   const STORAGE_KEY = 'vbk_orders';
   const SALES_KEY = 'vbk_sales_person';
+  const ADDSN_URL = 'https://t16.et818.com/XWJ/PlanReg/AddDSN/PlanMng.ListRegDSN1?PageType=add&RegID=0&BizMode=15';
+  const ROUTE_TEMPLATE_NAMES = [
+    '甘南天水', '甘南牧歌', '甘南九寨', '甘南莲宝',
+    '丝路华章', '天境青甘', '河西走廊', '西北精华', '西北风向标', '悠游西北',
+    '全景华章+甘南', '全景华章+天水', '全景精华+天水',
+    '全景水雅+甘南', '全景水雅+天水',
+    '青海秘境', '青海一地', '藏韵九寨', '南疆', '北疆', '北疆风华',
+    '云南漫时光', '云南滇西北', '疆山行迹', '疆山如画', '北疆精华',
+    '蜀行九寨', '迈动九寨', '川西小环线',
+  ].sort((a, b) => b.length - a.length);
   let currentOrder = null;
   let currentSalesPerson = '李明强';
   let panel = null;
@@ -72,6 +82,7 @@
 
     panel = document.createElement('div');
     panel.id = 'vbk-et818-panel';
+    panel.className = 'vbk-minimized';
     panel.innerHTML = `
       <div class="vbk-panel-header" id="vbk-panel-drag">
         <span class="vbk-panel-title">🔷 VBK 订单数据</span>
@@ -161,10 +172,9 @@
       panel.style.display = 'none';
     });
 
-    // 折叠
+    // 折叠/展开
     document.getElementById('vbk-panel-collapse')?.addEventListener('click', () => {
-      const body = document.getElementById('vbk-panel-body');
-      body.style.display = body.style.display === 'none' ? 'block' : 'none';
+      panel.classList.toggle('vbk-minimized');
     });
 
     // 切换订单
@@ -285,6 +295,77 @@
     } catch (e) {
       return null;
     }
+  }
+
+  function isAddDsnUrl(src) {
+    return !!src && (src.includes('AddDSN') || src.includes('PageType=add'));
+  }
+
+  function isAddDsnDoc(doc) {
+    return !!findMainTable(doc);
+  }
+
+  function isVisibleIframe(iframe) {
+    const rect = iframe.getBoundingClientRect();
+    return iframe.offsetParent !== null && rect.width > 20 && rect.height > 20;
+  }
+
+  function findNavigationIframe() {
+    const selectors = [
+      '#LAY_app_body .layadmin-tabsbody-item.layui-show iframe',
+      '.layadmin-tabsbody-item.layui-show iframe',
+      '#LAY_app_body .layui-show iframe',
+      '.layui-show iframe',
+      '#LAY_app_body iframe',
+      '.layadmin-tabsbody-item iframe',
+      'iframe',
+    ];
+
+    const seen = new Set();
+    const candidates = [];
+    for (const selector of selectors) {
+      for (const iframe of document.querySelectorAll(selector)) {
+        if (seen.has(iframe)) continue;
+        seen.add(iframe);
+        candidates.push(iframe);
+      }
+    }
+
+    return candidates.find(isVisibleIframe)
+      || candidates.find(iframe => getIframeDoc(iframe))
+      || candidates[0]
+      || null;
+  }
+
+  async function waitForAddDsnDoc(iframe, timeoutMs = 8000) {
+    const started = Date.now();
+    while (Date.now() - started < timeoutMs) {
+      const doc = getIframeDoc(iframe);
+      if (doc && doc.body && isAddDsnDoc(doc)) return doc;
+      await sleep(250);
+    }
+    return getIframeDoc(iframe);
+  }
+
+  async function ensureAddDsnDocument() {
+    if (isAddDsnDoc(document)) {
+      return { doc: document, parentDoc: document, iframe: null, mode: 'top' };
+    }
+
+    const existingAddIframe = Array.from(document.querySelectorAll('iframe'))
+      .find(iframe => isAddDsnUrl(iframe.src || '') && getIframeDoc(iframe));
+    if (existingAddIframe) {
+      const doc = await waitForAddDsnDoc(existingAddIframe);
+      return { doc, parentDoc: document, iframe: existingAddIframe, mode: 'existing' };
+    }
+
+    const navIframe = findNavigationIframe();
+    if (!navIframe) return { doc: null, parentDoc: document, iframe: null, mode: 'missing' };
+
+    log('🔄 当前页面不是新增表单，正在打开 AddDSN…');
+    navIframe.src = ADDSN_URL;
+    const doc = await waitForAddDsnDoc(navIframe);
+    return { doc, parentDoc: document, iframe: navIframe, mode: 'navigated' };
   }
 
   // ── 查找主信息表 ──────────────────────────────────────────────
@@ -784,6 +865,63 @@
     return null;
   }
 
+  function parseRouteTemplateIntent(text) {
+    const s = String(text || '').replace(/\s+/g, '').replace(/＋/g, '+');
+    const route = ROUTE_TEMPLATE_NAMES.find(name => s.includes(name)) || '';
+    const dayMatch = s.match(/(\d{1,2})[日天]/);
+    const cityText = s
+      .replace(/兰州/g, '兰').replace(/西宁/g, '西').replace(/成都/g, '成').replace(/敦煌/g, '敦')
+      .replace(/乌鲁木齐|乌市/g, '乌').replace(/喀什/g, '喀').replace(/伊宁/g, '伊')
+      .replace(/昆明/g, '昆').replace(/丽江/g, '丽').replace(/版纳|西双版纳/g, '版');
+    const sameCity = cityText.match(/([\u4e00-\u9fa5])进出/) || cityText.match(/([\u4e00-\u9fa5])进\1出/);
+    const diffCity = cityText.match(/([\u4e00-\u9fa5])进([\u4e00-\u9fa5])出/);
+    return {
+      route,
+      days: dayMatch ? dayMatch[1] : '',
+      city: sameCity ? `${sameCity[1]}进${sameCity[1]}出` : (diffCity ? `${diffCity[1]}进${diffCity[2]}出` : ''),
+    };
+  }
+
+  function findBestRouteCandidate(docs, intent) {
+    const items = docs.flatMap(doc => Array.from(doc.querySelectorAll('.dropdown-item, .layui-anim dd, .chosen-results li')))
+      .filter(item => item.offsetParent !== null)
+      .map(item => ({ item, text: item.textContent.trim(), intent: parseRouteTemplateIntent(item.textContent) }))
+      .filter(x => x.intent.route === intent.route && x.intent.days === intent.days);
+    if (!items.length) return null;
+    if (intent.city) {
+      const cityMatched = items.find(x => x.intent.city === intent.city);
+      if (cityMatched) return cityMatched.item;
+    }
+    return items[0].item;
+  }
+
+  async function selectRouteTemplate(doc, parentDoc, cell, orderText, searchKeyword) {
+    const intent = parseRouteTemplateIntent(orderText);
+    if (!intent.route || !intent.days) {
+      log(`  ⚠️ 线路模板缺少路线或天数: ${orderText || '(空)'}`);
+      return false;
+    }
+    const input = cell && cell.querySelector('input[type="text"], input:not([type])');
+    if (!input) return false;
+    _setVueInput(input, '');
+    await sleep(200);
+    _setVueInput(input, searchKeyword || intent.route);
+    input.dispatchEvent(new KeyboardEvent('keydown', { key: 'ArrowDown', code: 'ArrowDown', keyCode: 40, bubbles: true }));
+    await sleep(1000);
+    let candidate = findBestRouteCandidate([doc, parentDoc], intent);
+    if (!candidate) {
+      await sleep(1000);
+      candidate = findBestRouteCandidate([doc, parentDoc], intent);
+    }
+    if (!candidate) return false;
+    clickCandidate(candidate);
+    await sleep(1200);
+    input.blur();
+    closeDropdowns(input.ownerDocument);
+    log(`  ✅ 线路模板候选: ${candidate.textContent.trim()}`);
+    return true;
+  }
+
   function findFirstDropdownCandidate(doc) {
     const items = doc.querySelectorAll('.dropdown-item, .layui-anim dd, .chosen-results li');
     for (const item of items) {
@@ -792,6 +930,48 @@
       if (text) return item;
     }
     return null;
+  }
+
+  function findScenicVisit(doc) {
+    const scenicMatchers = [
+      { scenic: '四姑娘山', test: text => text.includes('四姑娘山') },
+      { scenic: '九寨沟', test: text => /九寨沟(风景区|景区)/.test(text) },
+      { scenic: '莫高窟', test: text => text.includes('莫高窟') },
+      { scenic: '喀纳斯禾木', test: text => text.includes('喀纳斯') || text.includes('禾木') },
+    ];
+    const tables = Array.from(doc.querySelectorAll('table'));
+    const productTable = tables.find(table => {
+      const text = table.innerText || '';
+      return text.includes('日期') && text.includes('旅游线路') && text.includes('交通工具');
+    });
+    if (!productTable) return null;
+    for (const row of productTable.querySelectorAll('tr')) {
+      const cells = row.querySelectorAll('td, th');
+      if (cells.length < 3) continue;
+      const routeText = Array.from(cells[2].querySelectorAll('input, textarea'))
+        .map(input => input.value || '')
+        .join(' ') || cells[2].textContent || '';
+      const matched = scenicMatchers.find(item => item.test(routeText));
+      if (!matched) continue;
+      const dateInputs = cells[0].querySelectorAll('input');
+      const rowText = Array.from(cells).map(cell => cell.textContent || '').join(' ');
+      const rowDate = rowText.match(/20\d{2}-\d{1,2}-\d{1,2}/);
+      if (dateInputs.length < 3) return { scenic: matched.scenic, date: rowDate ? rowDate[0].replace(/-(\d)(?=-|$)/g, '-0$1') : '' };
+      const year = (dateInputs[0].value || '').trim();
+      const month = (dateInputs[1].value || '').trim().padStart(2, '0');
+      const day = (dateInputs[2].value || '').trim().padStart(2, '0');
+      return { scenic: matched.scenic, date: year && month && day ? `${year}-${month}-${day}` : (rowDate ? rowDate[0].replace(/-(\d)(?=-|$)/g, '-0$1') : '') };
+    }
+    return null;
+  }
+
+  async function waitForScenicVisit(doc, attempts = 10) {
+    for (let i = 0; i < attempts; i++) {
+      const scenicVisit = findScenicVisit(doc);
+      if (scenicVisit?.date) return scenicVisit;
+      await sleep(300);
+    }
+    return findScenicVisit(doc);
   }
 
   function clickCandidate(el) {
@@ -881,55 +1061,15 @@
   async function fillAll(order) {
     log('⚡ 开始一键填表…');
 
-    const ADDSN_URL = 'https://t16.et818.com/XWJ/PlanReg/AddDSN/PlanMng.ListRegDSN1?PageType=add&RegID=0&BizMode=15';
-
-    let iframe = findEt818Iframe();
-    let doc = null;
-    let parentDoc = document;
-
-    if (iframe) {
-      const src = iframe.src || '';
-      // 检查是否已经在 AddDSN 页面
-      if (!src.includes('AddDSN') && !src.includes('PageType=add')) {
-        log('🔄 当前不在新增页，自动导航到 AddDSN…');
-        iframe.src = ADDSN_URL;
-        await sleep(3000);
-        doc = getIframeDoc(iframe);
-        if (!doc) {
-          log('❌ 导航后无法访问 iframe');
-          return;
-        }
-        log('✅ 已导航到新增页, tables: ' + doc.querySelectorAll('table').length);
-      } else {
-        log('✅ 已在新增页: ' + src.substring(0, 60));
-        doc = getIframeDoc(iframe);
-        if (!doc) {
-          log('❌ 无法访问 iframe 内容（可能是跨域限制）');
-          return;
-        }
-      }
-
-      // 已在 AddDSN 页面 → 直接填表（不再点"保存并新增"）
-      log('✅ 新增表单已就绪, tables: ' + doc.querySelectorAll('table').length);
-    } else {
-      // 没找到 AddDSN iframe → 尝试找到主内容区 iframe 并导航
-      log('ℹ️ 未找到 AddDSN iframe，尝试导航主内容区…');
-      const mainIframe = document.querySelector('#LAY_app_body iframe, .layadmin-tabsbody-item iframe');
-      if (mainIframe) {
-        mainIframe.src = ADDSN_URL;
-        await sleep(3000);
-        iframe = mainIframe;
-        doc = getIframeDoc(iframe);
-        if (!doc) {
-          log('❌ 导航后无法访问 iframe');
-          return;
-        }
-        log('✅ 已导航到新增页, tables: ' + doc.querySelectorAll('table').length);
-      } else {
-        log('❌ 找不到任何可导航的 iframe');
-        return;
-      }
+    const addPage = await ensureAddDsnDocument();
+    const iframe = addPage.iframe;
+    const doc = addPage.doc;
+    const parentDoc = addPage.parentDoc;
+    if (!doc || !doc.body) {
+      log('❌ 无法打开新增表单：未找到可导航的 ET818 iframe');
+      return;
     }
+    log('✅ 新增表单已就绪, tables: ' + doc.querySelectorAll('table').length);
 
     let mainTable = findMainTable(doc);
     if (!mainTable) {
@@ -954,24 +1094,15 @@
     let templateKeyword = '';
     const rn = order.route_name || order.product_name || '';
     if (rn) {
-      const dayMatch = rn.match(/([\d]+)[日天]/);
-      const prefix = rn.split(/[-\u3010【]/)[0];
-      if (dayMatch) {
-        templateKeyword = (prefix || rn).substring(0, 4) + dayMatch[1];
-      } else {
-        templateKeyword = rn.substring(0, 4);
-      }
+      const intent = parseRouteTemplateIntent(rn);
+      templateKeyword = intent.route ? `${intent.route}${intent.days || ''}` : rn;
     }
     if (templateKeyword) {
       const cell = findFieldCell(mainTable, '线路模板');
       if (cell) {
         log(`🔍 搜索线路模板: "${templateKeyword}"`);
-        const templateOk = await setSearchableDropdown(doc, parentDoc, cell, templateKeyword, templateKeyword, {
-          pick_first: true,
-          after_select_wait: 1200,
-        });
+        const templateOk = await selectRouteTemplate(doc, parentDoc, cell, rn, templateKeyword);
         if (templateOk) {
-          log('  ✅ 线路模板: 已选择第一个候选');
           successCount++;
           await sleep(1200);
           const refreshedMainTable = findMainTable(doc);
@@ -991,7 +1122,6 @@
     const dateFields = [
       { label: '出团日期', value: order.departure_date },
       { label: '返程日期', value: order.return_date },
-      { label: '参观日期', value: order.departure_date },
     ];
     for (const f of dateFields) {
       if (!f.value) continue;
@@ -1023,16 +1153,27 @@
       else { log(`  ⚠️ ${f.label} 写入失败`); failCount++; }
     }
 
+    const scenicVisit = await waitForScenicVisit(doc);
+    const visitDate = scenicVisit?.date || order.departure_date;
+    if (visitDate) {
+      const visitDateCell = findFieldCell(mainTable, '参观日期');
+      const visitEtDate = visitDateCell && visitDateCell.querySelector('.et-date');
+      const visitDateResult = visitEtDate ? _setEtDate(visitEtDate, visitDate) : { ok: setThreePartDate(visitDateCell, visitDate), detail: 'three-part' };
+      if (visitDateResult.ok) { log(`  ✅ 参观日期: ${visitDate}`); successCount++; }
+      else { log(`  ⚠️ 参观日期写入失败: ${visitDate} [${visitDateResult.detail}]`); failCount++; }
+    }
+
     // ── Step 4: 搜索型下拉 ───────────────────────────────────
     step('主信息下拉字段');
 
-    // 预约景区：默认无需预约
+    // 预约景区：产品组日期行命中需预约景区时选景区，否则默认无需预约
     {
-      const scenicBookingValue = '无需预约';
+      const scenicBookingValue = scenicVisit?.scenic || '无需预约';
       const cell = findFieldCell(mainTable, '预约景区');
       const ok = await setSearchableDropdown(doc, parentDoc, cell, scenicBookingValue, scenicBookingValue);
       if (ok) { log(`  ✅ 预约景区: ${scenicBookingValue}`); successCount++; }
       else { log(`  ⚠️ 预约景区未选中: ${scenicBookingValue}`); failCount++; }
+      if (scenicVisit?.date) log(`  ✅ 预约景区参观日期: ${scenicVisit.date}`);
     }
 
     // 大交通：优先 parser 判断；无航班时默认“当地参”作为兜底
@@ -1178,12 +1319,12 @@
       if (scenicOk) { log('  ✅ 最终清空景区订单号'); successCount++; }
       else { log('  ⚠️ 最终清空景区订单号失败'); failCount++; }
     }
-    if (order.departure_date) {
+    if (visitDate) {
       const visitDateCell = findFieldCell(finalMainTable, '参观日期');
       const visitEtDate = visitDateCell && visitDateCell.querySelector('.et-date');
-      const visitDateResult = visitEtDate ? _setEtDate(visitEtDate, order.departure_date) : { ok: setThreePartDate(visitDateCell, order.departure_date), detail: 'three-part' };
-      if (visitDateResult.ok) { log(`  ✅ 最终补写参观日期: ${order.departure_date}`); successCount++; }
-      else { log(`  ⚠️ 最终补写参观日期失败: ${order.departure_date} [${visitDateResult.detail}]`); failCount++; }
+      const visitDateResult = visitEtDate ? _setEtDate(visitEtDate, visitDate) : { ok: setThreePartDate(visitDateCell, visitDate), detail: 'three-part' };
+      if (visitDateResult.ok) { log(`  ✅ 最终补写参观日期: ${visitDate}`); successCount++; }
+      else { log(`  ⚠️ 最终补写参观日期失败: ${visitDate} [${visitDateResult.detail}]`); failCount++; }
     }
     if (order.total_amount) {
       const feeResult = await fillFeeFirstRow(doc, order.total_amount);
